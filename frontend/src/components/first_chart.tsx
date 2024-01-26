@@ -86,7 +86,9 @@ const ChartCustom: React.FC<ChartCustomProps> = ({
     }
   }, [data, chartLabel, isUpdated, chartRef]);
 
-  return <canvas ref={chartRef} />;
+  return (
+    <canvas style={{ width: "100%", maxHeight: "300px" }} ref={chartRef} />
+  );
 };
 
 export default ChartCustom;

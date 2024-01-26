@@ -1,3 +1,4 @@
+import token
 from flask import Flask, jsonify
 from pyspark.sql import SparkSession
 import snowflake.connector
@@ -17,7 +18,8 @@ snowflake_config = {
     'account': 'zodwsgw-kw81190',
     'warehouse': 'FINAL_PROJECT',
     'database': 'COVID19_EPIDEMIOLOGICAL_DATA',
-    'schema': 'public'  # Adjust the schema if necessary
+    'schema': 'public'  # Adjust the schema if necessary, in perfect case 
+    # I would move it to global variable so it is not read public, but this is just an example
 }
 
 # Snowflake connection
@@ -25,10 +27,40 @@ conn = snowflake.connector.connect(**snowflake_config)
 cur = conn.cursor()
 
 spark = SparkSession.builder.appName("ProjectApp").getOrCreate()
+# Created a dictionary to store data as cache
+cache = {}
 
-@app.route('/get_data/<string:query>', methods=['GET'])
+# Helper function to execute Spark queries
+def execute_spark_query(query, selected_columns, filter_condition, selectedAmount):
+    cur.execute(query)
+
+    # Fetch data
+    result = cur.fetchall()
+
+    # Convert result to a list of dictionaries
+    column_names = [desc[0] for desc in cur.description]
+    data = [dict(zip(column_names, row)) for row in result]
+
+    df = spark.createDataFrame(data)
+
+    # Cache the DataFrame
+    df.persist()
+
+    # Selecting specific columns from the Spark DataFrame
+    selected_data = df.select(selected_columns).where(filter_condition).orderBy(selected_columns[1], ascending=False).limit(selectedAmount).toPandas()
+
+    # Convert Pandas DataFrame to a dictionary
+    data_dict = dict(zip(selected_data[selected_columns[0]], selected_data[selected_columns[1]]))
+
+    # Unpersist the DataFrame from cache
+    df.unpersist()
+
+    return data_dict
+
+@app.route('/get_data/<string:query>', methods=['GET']) 
 def get_data(query):
     try:
+        # An example of how it would be possible token query snowflake
         # Execute your Snowflake query
         query = query
         
@@ -51,92 +83,68 @@ def get_data(query):
 # @app.route('/get_comment/<int::selectedChart>', methods=['GET'])
 # def get_comment(selectedChart):
 #     try:
-#         #I need to connect to mongoDB database
-        
-
+#         #I started the mongoDB part a bit late, but would implement it by using the mongo-actions, by getting the onClick information
+            # from the react to the python part
 #         return jsonify({'comment': 'comment'})
 
 @app.route('/get_transformed_data/<int:selectedChart>/<int:selectedAmount>', methods=['GET'])
 def get_transformed_data(selectedChart, selectedAmount):
     try:
-        # Execute your Snowflake query
-        if(selectedChart == 1):
+        if selectedChart == 1:
             query = "SELECT COUNTRY_REGION, SUM(deaths) AS total_deaths, MAX(POPULATION) - SUM(deaths) AS remaining_population, ROUND((SUM(deaths) / MAX(POPULATION)) * 100, 3) AS percentage_died FROM ECDC_GLOBAL GROUP BY COUNTRY_REGION ORDER BY percentage_died DESC "
-        
-        if(selectedChart == 2):
-            query = "SELECT COUNTRY_REGION, MAX(PEOPLE_FULLY_VACCINATED) as FULLY_VACCINATED, MAX(LAST_OBSERVATION_DATE) FROM OWID_VACCINATIONS GROUP BY COUNTRY_REGION"
-
-        if(selectedChart == 3):
-            query = """ 
-                    SELECT
-                        A.COUNTRY_REGION,
-                        B.HDI,
-                        A.percentage_died,
-                        ROUND((A.percentage_died / B.HDI) * 100, 3) AS ratio
-                    FROM (
-                        SELECT
-                            COUNTRY_REGION,
-                            SUM(deaths) AS total_deaths,
-                            MAX(POPULATION) - SUM(deaths) AS remaining_population,
-                            ROUND((SUM(deaths) / MAX(POPULATION)) * 100, 3) AS percentage_died
-                        FROM
-                        COVID19_EPIDEMIOLOGICAL_DATA.PUBLIC.ECDC_GLOBAL
-                        GROUP BY
-                            COUNTRY_REGION
-                        HAVING
-                            percentage_died > 0
-                    ) A
-                    JOIN (
-                        SELECT DISTINCT
-                            COUNTRY,
-                            HDI
-                        FROM
-                            FINAL_PROJECT.PUBLIC.ECONOMIC_DATA
-                        WHERE
-                            HDI > 0
-                    ) B
-                    ON
-                        A.COUNTRY_REGION = B.COUNTRY
-                    ORDER BY
-                        ratio DESC;
-                    """
-
-        cur.execute(query)
-
-        # Fetch data
-        result = cur.fetchall()
-
-        # Convert result to a list of dictionaries
-        column_names = [desc[0] for desc in cur.description]
-        data = [dict(zip(column_names, row)) for row in result]
-
-        df = spark.createDataFrame(data)
-
-        # Selecting specific columns from the Spark DataFrame
-        if(selectedChart == 1):
             selected_columns = ['COUNTRY_REGION', 'PERCENTAGE_DIED']
-            selected_data = df.select(selected_columns).where('PERCENTAGE_DIED > 0').orderBy('PERCENTAGE_DIED', ascending=False).limit(selectedAmount).toPandas()
-
-            # Convert Pandas DataFrame to a dictionary with 'COUNTRY_REGION' as key and 'PERCENTAGE_DIED' as value
-            data_dict = dict(zip(selected_data['COUNTRY_REGION'], selected_data['PERCENTAGE_DIED']))
-            return jsonify({'data': data_dict})
-
-
-        if(selectedChart == 2):
+            filter_condition = 'PERCENTAGE_DIED > 0'
+        elif selectedChart == 2:
+            query = "SELECT COUNTRY_REGION, MAX(PEOPLE_FULLY_VACCINATED) as FULLY_VACCINATED, MAX(LAST_OBSERVATION_DATE) FROM OWID_VACCINATIONS GROUP BY COUNTRY_REGION"
             selected_columns = ['COUNTRY_REGION', 'FULLY_VACCINATED']
-            selected_data = df.select(selected_columns).where('FULLY_VACCINATED > 0').orderBy('FULLY_VACCINATED', ascending=False).limit(selectedAmount).toPandas()
-
-            data_dict = dict(zip(selected_data['COUNTRY_REGION'], selected_data['FULLY_VACCINATED']))
-            return jsonify({'data': data_dict})
-        
-        if(selectedChart == 3):
+            filter_condition = 'FULLY_VACCINATED > 0'
+        elif selectedChart == 3:
+            query = """
+                SELECT
+                    A.COUNTRY_REGION,
+                    B.HDI,
+                    A.percentage_died,
+                    ROUND((A.percentage_died / B.HDI) * 100, 3) AS ratio
+                FROM (
+                    SELECT
+                        COUNTRY_REGION,
+                        SUM(deaths) AS total_deaths,
+                        MAX(POPULATION) - SUM(deaths) AS remaining_population,
+                        ROUND((SUM(deaths) / MAX(POPULATION)) * 100, 3) AS percentage_died
+                    FROM
+                    COVID19_EPIDEMIOLOGICAL_DATA.PUBLIC.ECDC_GLOBAL
+                    GROUP BY
+                        COUNTRY_REGION
+                    HAVING
+                        percentage_died > 0
+                ) A
+                JOIN (
+                    SELECT DISTINCT
+                        COUNTRY,
+                        HDI
+                    FROM
+                        FINAL_PROJECT.PUBLIC.ECONOMIC_DATA
+                    WHERE
+                        HDI > 0
+                ) B
+                ON
+                    A.COUNTRY_REGION = B.COUNTRY
+                ORDER BY
+                    ratio DESC;
+                """
             selected_columns = ['COUNTRY_REGION', 'ratio']
-            selected_data = df.select(selected_columns).where('ratio > 0').orderBy('ratio', ascending=False).limit(selectedAmount).toPandas()
+            filter_condition = 'ratio > 0'
+        else:
+            return jsonify({'error': 'Invalid selectedChart value'})
 
-            data_dict = dict(zip(selected_data['COUNTRY_REGION'], selected_data['ratio']))
-            return jsonify({'data': data_dict})
+        # Check if the DataFrame is already in cache
+        if selectedChart not in cache:
+            # Execute the Spark query and store the result in cache
+            cache[selectedChart] = execute_spark_query(query, selected_columns, filter_condition, selectedAmount)
 
-    
+        # Return the cached result
+        return jsonify({'data': cache[selectedChart]})
+
     except Exception as e:
         return jsonify({'error': str(e)})
 
