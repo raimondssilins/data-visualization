@@ -1,0 +1,6 @@
+use warehouse final_project;
+
+SELECT COUNTRY_REGION, SUM(DEATHS) AS total_deaths
+FROM ECDC_GLOBAL
+GROUP BY COUNTRY_REGION
+ORDER BY total_deaths DESC;

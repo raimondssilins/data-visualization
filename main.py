@@ -30,8 +30,7 @@ spark = SparkSession.builder.appName("ProjectApp").getOrCreate()
 # Created a dictionary to store data as cache
 cache = {}
 
-# Helper function to execute Spark queries
-def execute_spark_query(query, selected_columns, filter_condition, selectedAmount):
+def execute_spark_query(query, selected_columns, filter_condition):
     cur.execute(query)
 
     # Fetch data
@@ -43,19 +42,13 @@ def execute_spark_query(query, selected_columns, filter_condition, selectedAmoun
 
     df = spark.createDataFrame(data)
 
-    # Cache the DataFrame
+    # Cache the entire DataFrame
     df.persist()
 
     # Selecting specific columns from the Spark DataFrame
-    selected_data = df.select(selected_columns).where(filter_condition).orderBy(selected_columns[1], ascending=False).limit(selectedAmount).toPandas()
+    selected_data = df.select(selected_columns).where(filter_condition).orderBy(selected_columns[1], ascending=False)
 
-    # Convert Pandas DataFrame to a dictionary
-    data_dict = dict(zip(selected_data[selected_columns[0]], selected_data[selected_columns[1]]))
-
-    # Unpersist the DataFrame from cache
-    df.unpersist()
-
-    return data_dict
+    return selected_data
 
 @app.route('/get_data/<string:query>', methods=['GET']) 
 def get_data(query):
@@ -87,6 +80,8 @@ def get_data(query):
             # from the react to the python part
 #         return jsonify({'comment': 'comment'})
 
+# Define your route
+# Define your route
 @app.route('/get_transformed_data/<int:selectedChart>/<int:selectedAmount>', methods=['GET'])
 def get_transformed_data(selectedChart, selectedAmount):
     try:
@@ -140,10 +135,16 @@ def get_transformed_data(selectedChart, selectedAmount):
         # Check if the DataFrame is already in cache
         if selectedChart not in cache:
             # Execute the Spark query and store the result in cache
-            cache[selectedChart] = execute_spark_query(query, selected_columns, filter_condition, selectedAmount)
+            cache[selectedChart] = execute_spark_query(query, selected_columns, filter_condition)
 
-        # Return the cached result
-        return jsonify({'data': cache[selectedChart]})
+        # Retrieve the cached DataFrame
+        selected_data = cache[selectedChart].limit(selectedAmount).toPandas()
+
+        # Convert Pandas DataFrame to a dictionary for the chart
+        data_dict = dict(zip(selected_data[selected_columns[0]], selected_data[selected_columns[1]]))
+
+        # Return the result
+        return jsonify({'data': data_dict})
 
     except Exception as e:
         return jsonify({'error': str(e)})
